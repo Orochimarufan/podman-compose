@@ -1301,6 +1301,7 @@ class PodmanCompose:
     def __init__(self):
         self.podman = None
         self.podman_version = None
+        self.podman_v4 = True
         self.environ = {}
         self.exit_code = None
         self.commands = {}
@@ -1375,6 +1376,9 @@ class PodmanCompose:
                 log("it seems that you do not have `podman` installed")
                 sys.exit(1)
             log("using podman version: " + self.podman_version)
+            self.podman_v4 = not strverscmp_lt(self.podman_version, "4.0.0")
+            if not self.podman_v4:
+                log("Please note that podman 4.0 or newer is required for some features")
         cmd_name = args.command
         compose_required = cmd_name != "version" and (
             cmd_name != "systemd" or args.action != "create-unit"
