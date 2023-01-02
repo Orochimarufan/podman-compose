@@ -765,43 +765,85 @@ def get_net_args(compose, cnt):
             sys.exit(1)
     else:
         is_bridge = True
-    proj_name = compose.project_name
-    default_net = compose.default_net
-    nets = compose.networks
+
     cnt_nets = cnt.get("networks", None)
-    aliases = [service_name]
-    # NOTE: from podman manpage:
-    # NOTE: A container will only have access to aliases on the first network that it joins. This is a limitation that will be removed in a later release.
-    ip = None
-    ip6 = None
-    if cnt_nets and is_dict(cnt_nets):
-        # cnt_nets is {net_key: net_value, ...}
-        for net_value in cnt_nets.values():
-            net_value = net_value or {}
-            aliases.extend(norm_as_list(net_value.get("aliases", None)))
-            if not ip:
-                ip = net_value.get("ipv4_address", None)
-            if not ip6:
-                ip6 = net_value.get("ipv6_address", None)
-        cnt_nets = list(cnt_nets.keys())
-    cnt_nets = norm_as_list(cnt_nets or default_net)
-    net_names = set()
-    for net in cnt_nets:
-        net_desc = nets[net] or {}
-        is_ext = net_desc.get("external", None)
-        ext_desc = is_ext if is_dict(is_ext) else {}
-        default_net_name = net if is_ext else f"{proj_name}_{net}"
-        net_name = (
-            ext_desc.get("name", None) or net_desc.get("name", None) or default_net_name
-        )
-        net_names.add(net_name)
-    net_names_str = ",".join(net_names)
-    if is_bridge:
-        net_args.extend(["--net", net_names_str, "--network-alias", ",".join(aliases)])
-    if ip:
-        net_args.append(f"--ip={ip}")
-    if ip6:
-        net_args.append(f"--ip6={ip6}")
+    if cnt_nets is None:
+        cnt_nets = {compose.default_net: None}
+    elif not is_dict(cnt_nets):
+        if is_str(cnt_nets):
+            cnt_nets = cnt_nets.split(',')
+        if is_list(cnt_nets):
+            cnt_nets = {name: None for name in cnt_nets}
+
+    per_network_options = compose.podman_v4 and is_bridge
+    global_aliases = [service_name]
+    global_ip4 = None
+    global_ip6 = None
+
+    for name, options in cnt_nets.items():
+        # Compute real network name
+        if is_bridge:
+            net_desc = compose.networks[name] or {}
+            net_external = net_desc.get("external", False)
+            net_name = net_desc.get("name", None)
+            if net_name is None:
+                if net_external:
+                    net_name = name
+                else:
+                    net_name = f"{compose.project_name}_{name}"
+        else:
+            net_name = None
+            net_external = False
+
+        # Process network options
+        options = norm_as_dict(options)
+        # Podman 4.0 accepts options for each bridge network
+        if per_network_options:
+            net_options = []
+            # Static IP Addresses
+            net_options.extend(f"ip={ip}" for ip in
+                (options.get("ipv4_address", None),
+                 options.get("ipv6_address", None))
+                if ip is not None)
+            # DNS Aliases
+            aliases = options.get("aliases", None)
+            if aliases is not None:
+                net_options.extend(f"alias={alias}" for alias in norm_as_list(aliases))
+            elif net_external:
+                # Prefix default alias with project name on external network
+                net_options.append(f"alias={compose.project_name}_{service_name}")
+            else:
+                net_options.append(f"alias={service_name}")
+            # Additional non-standard podman options
+            if "mac_address" in options:
+                net_options.append(f"mac={options['mac_address']}")
+            if "interface_name" in options:
+                net_options.append(f"interface_name={options['interface_name']}")
+        else:
+            # Try to approximate the effects of the standard options as in previous versions
+            net_options = None
+            # NOTE: from podman manpage:
+            # NOTE: A container will only have access to aliases on the first network that it joins. This is a limitation that will be removed in a later release.
+            global_aliases.extend(norm_as_list(options.get("aliases", None)))
+            if not global_ip4:
+                global_ip4 = net_value.get("ipv4_address", None)
+            if not global_ip6:
+                global_ip6 = net_value.get("ipv6_address", None)
+            if is_bridge:
+                log("Note: Bridge network configuration is degraded in podman versions < 4.0")
+
+        # Add network to container
+        if net_name is not None:
+            net_args.extend(["--net", net_name if not net_options else f"{net_name}:{','.join(net_options)}"])
+
+    if not per_network_options:
+        if is_bridge:
+            net_args.extend([f"--network-alias", ",".join(global_aliases)])
+        if global_ip4:
+            net_args.append(f"--ip={global_ip4}")
+        if global_ip6:
+            net_args.append(f"--ip6={global_ip6}")
+
     return net_args
 
 
